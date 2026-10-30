@@ -5,7 +5,8 @@
  ******************************************************************************
  * @attention
  *
- * Copyright (c) 2022 - 2026 Lars Boegild Thomsen <lbthomsen@gmail.com>
+ * Copyright (c) 2022 - 2026
+ * Lars Boegild Thomsen <lbthomsen@gmail.com>
  * All rights reserved.
  *
  * This software is licensed under terms that can be found in the LICENSE file
@@ -16,7 +17,9 @@
  */
 
 #include "w25qxx.h"
+#ifndef PICO_BUILD
 #include "main.h"
+#endif
 #include <string.h>
 
 #ifdef DEBUG
@@ -33,7 +36,11 @@
  * @param  w25qxx: pointer to a W25QXX_HandleTypeDef structure
  */
 static inline void cs_on(W25QXX_HandleTypeDef *w25qxx) {
+#ifdef PICO_BUILD
+    gpio_put(w25qxx->cs_pin, 0);
+#else
     HAL_GPIO_WritePin(w25qxx->cs_port, w25qxx->cs_pin, GPIO_PIN_RESET);
+#endif
 }
 
 /**
@@ -41,8 +48,34 @@ static inline void cs_on(W25QXX_HandleTypeDef *w25qxx) {
  * @param  w25qxx: pointer to a W25QXX_HandleTypeDef structure
  */
 static inline void cs_off(W25QXX_HandleTypeDef *w25qxx) {
+#ifdef PICO_BUILD
+    gpio_put(w25qxx->cs_pin, 1);
+#else
     HAL_GPIO_WritePin(w25qxx->cs_port, w25qxx->cs_pin, GPIO_PIN_SET);
+#endif
 }
+
+/**
+ * @brief  Get millisecond tick count
+ */
+static inline uint32_t get_tick(void) {
+#ifdef PICO_BUILD
+    return to_ms_since_boot(get_absolute_time());
+#else
+    return HAL_GetTick();
+#endif
+}
+
+/**
+ * @brief  Flush leftover bytes in Pico SPI RX FIFO
+ */
+#ifdef PICO_BUILD
+static inline void spi_flush_rx_fifo(spi_inst_t *spi) {
+    while (spi_is_readable(spi)) {
+        (void)spi_get_hw(spi)->dr;
+    }
+}
+#endif
 
 /**
  * @brief  Transmit data to w25qxx - ignore returned data
@@ -52,9 +85,17 @@ static inline void cs_off(W25QXX_HandleTypeDef *w25qxx) {
  * @retval W25QXX_result_t: result of the operation
  */
 W25QXX_result_t w25qxx_transmit(W25QXX_HandleTypeDef *w25qxx, uint8_t *buf, uint32_t len) {
+#ifdef PICO_BUILD
+    // Transmit blocking, then purge hardware RX FIFO of dummy response bytes
+    if (spi_write_blocking(w25qxx->spiHandle, buf, len) == (int)len) {
+        spi_flush_rx_fifo(w25qxx->spiHandle);
+        return W25QXX_Ok;
+    }
+#else
     if (HAL_SPI_Transmit(w25qxx->spiHandle, buf, len, 1000) == HAL_OK) {
         return W25QXX_Ok;
     }
+#endif
     return W25QXX_Err;
 }
 
@@ -66,9 +107,16 @@ W25QXX_result_t w25qxx_transmit(W25QXX_HandleTypeDef *w25qxx, uint8_t *buf, uint
  * @retval W25QXX_result_t: result of the operation
  */
 W25QXX_result_t w25qxx_receive(W25QXX_HandleTypeDef *w25qxx, uint8_t *buf, uint32_t len) {
+#ifdef PICO_BUILD
+    spi_flush_rx_fifo(w25qxx->spiHandle);
+    if (spi_read_blocking(w25qxx->spiHandle, W25QXX_DUMMY_BYTE, buf, len) == (int)len) {
+        return W25QXX_Ok;
+    }
+#else
     if (HAL_SPI_Receive(w25qxx->spiHandle, buf, len, 1000) == HAL_OK) {
         return W25QXX_Ok;
     }
+#endif
     return W25QXX_Err;
 }
 
@@ -135,6 +183,18 @@ W25QXX_result_t w25qxx_write_enable(W25QXX_HandleTypeDef *w25qxx) {
  * @param  cs_pin: GPIO pin for chip select
  * @retval W25QXX_result_t: result of the operation
  */
+#ifdef PICO_BUILD
+W25QXX_result_t w25qxx_init_pico(W25QXX_HandleTypeDef *w25qxx, spi_inst_t *spi, uint cs_pin) {
+    W25QXX_result_t result = W25QXX_Ok;
+    W25_DBG("w25qxx_init: %s", W25QXX_VERSION);
+
+    w25qxx->spiHandle = spi;
+    w25qxx->cs_pin = cs_pin;
+
+    gpio_init(cs_pin);
+    gpio_set_dir(cs_pin, GPIO_OUT);
+    cs_off(w25qxx);
+#else
 W25QXX_result_t w25qxx_init(W25QXX_HandleTypeDef *w25qxx, SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin) {
     W25QXX_result_t result = W25QXX_Ok;
     W25_DBG("w25qxx_init: %s", W25QXX_VERSION);
@@ -143,6 +203,7 @@ W25QXX_result_t w25qxx_init(W25QXX_HandleTypeDef *w25qxx, SPI_HandleTypeDef *hsp
     w25qxx->cs_port = cs_port;
     w25qxx->cs_pin = cs_pin;
     cs_off(w25qxx);
+#endif
 
     uint32_t id = w25qxx_read_id(w25qxx);
 
@@ -325,7 +386,7 @@ W25QXX_result_t w25qxx_chip_erase(W25QXX_HandleTypeDef *w25qxx) {
     }
     cs_off(w25qxx);
 
-    return w25qxx_wait_for_ready(w25qxx, 60000); // 60s max hardware limit bound
+    return w25qxx_wait_for_ready(w25qxx, 100000);
 }
 
 /**
@@ -335,9 +396,9 @@ W25QXX_result_t w25qxx_chip_erase(W25QXX_HandleTypeDef *w25qxx) {
  * @retval W25QXX_result_t: result of the operation
  */
 W25QXX_result_t w25qxx_wait_for_ready(W25QXX_HandleTypeDef *w25qxx, uint32_t timeout) {
-    uint32_t begin = HAL_GetTick();
+    uint32_t begin = get_tick();
 
-    while ((HAL_GetTick() - begin) <= timeout) {
+    while ((get_tick() - begin) <= timeout) {
         if ((w25qxx_get_status(w25qxx) & 0x01) == 0) {
             return W25QXX_Ok;
         }
