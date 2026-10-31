@@ -185,16 +185,37 @@ int pico_led_init(void) {
  * @brief SPI Hardware Initialization Function
  */
 static void MX_SPI1_Init(void) {
-    spi_init(FLASH_SPI, 10 * 1000 * 1000); // 10 MHz SPI clock speed
 
-    // Explicitly configure CS Pin
+    // 2. Initialize SPI hardware (Selects CPSDVSR = 6, SCR = 0 -> 50.0 MHz)
+    uint baudrate = spi_init(FLASH_SPI, 48 * 1000 * 1000);
+    printf("SPI1 initialized with baudrate: %u Hz\n", baudrate);
+
+    // 3. Configure Chip Select (CS)
     gpio_init(FLASH_PIN_CS);
     gpio_set_dir(FLASH_PIN_CS, GPIO_OUT);
     gpio_put(FLASH_PIN_CS, 1);
 
+    // 4. Map GPIO pins to SPI peripheral
     gpio_set_function(FLASH_PIN_MISO, GPIO_FUNC_SPI);
     gpio_set_function(FLASH_PIN_SCK, GPIO_FUNC_SPI);
     gpio_set_function(FLASH_PIN_MOSI, GPIO_FUNC_SPI);
+
+    // 5. Output pad settings for high-speed signals
+    gpio_set_slew_rate(FLASH_PIN_SCK, GPIO_SLEW_RATE_FAST);
+    gpio_set_drive_strength(FLASH_PIN_SCK, GPIO_DRIVE_STRENGTH_12MA);
+
+    gpio_set_slew_rate(FLASH_PIN_MOSI, GPIO_SLEW_RATE_FAST);
+    gpio_set_drive_strength(FLASH_PIN_MOSI, GPIO_DRIVE_STRENGTH_12MA);
+
+    // 6. Input pad settings for MISO read margin
+    gpio_set_input_hysteresis_enabled(FLASH_PIN_MISO, true);
+    gpio_pull_up(FLASH_PIN_MISO);
+
+    // 7. Verify hardware registers directly to ensure correct clock division
+    spi_hw_t *hw = spi_get_hw(FLASH_SPI);
+    uint32_t cpsdvsr = hw->cpsr;
+    uint32_t scr = (hw->cr0 >> 8) & 0xFF;
+    printf("PL022 Hardware Config -> CPSDVSR: %u, SCR: %u | Calculated: %u Hz\n", cpsdvsr, scr, clock_get_hz(clk_peri) / (cpsdvsr * (1 + scr)));
 }
 
 /**
@@ -247,6 +268,21 @@ void core1_entry() {
  */
 int main() {
 
+    vreg_disable_voltage_limit(); // Disable voltage limit to allow higher voltages for overclocking
+
+    vreg_set_voltage(VREG_VOLTAGE_1_35); // Set voltage to 1.60V for stable overclocking
+
+    rom_flash_enter_cmd_xip(); // Enter XIP mode for flash access
+
+    set_sys_clock_khz(300000, true); // Set system clock to 300 MHz, true means to wait for the clock to stabilize
+
+    clock_configure(
+        clk_peri,
+        0,
+        CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLK_SYS,
+        300000000,
+        300000000);
+
     int rc = pico_led_init();
     hard_assert(rc == PICO_OK);
 
@@ -292,7 +328,7 @@ int main() {
         printf("Unable to initialize w25qxx\n");
     }
 
-    sleep_ms(100);
+    sleep_ms(5000);
 
     for (uint8_t run = 0; run <= 2; ++run) {
 
@@ -462,7 +498,7 @@ int main() {
 
             printf("Test time                   : %lu ms\n", systick - now);
 
-            offset_address += PAGE_SIZE / 4;
+            offset_address += PAGE_SIZE;
 
             if (offset_address + PAGE_SIZE > w25qxx.block_count * w25qxx.block_size)
                 offset_address = 0;
