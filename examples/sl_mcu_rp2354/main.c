@@ -62,7 +62,7 @@ static uint8_t buf[PAGE_SIZE];
 /**
  * @brief Software CRC32 implementation matching standard STM32 HAL Hardware CRC (Poly: 0x04C11DB7)
  */
-static uint32_t HAL_CRC_Calculate(const uint32_t *pBuffer, uint32_t BufferLength) {
+static uint32_t crc32(const uint32_t *pBuffer, uint32_t BufferLength) {
     uint32_t crc = 0xFFFFFFFF;
     for (uint32_t i = 0; i < BufferLength; i++) {
         uint32_t data = pBuffer[i];
@@ -475,24 +475,24 @@ int main() {
 
             res = w25qxx_read(&w25qxx, offset_address, (uint8_t *)&buf, sizeof(buf));
             if (res == W25QXX_Ok) {
-                printf("Reading old value           : 0x%08lx\n", HAL_CRC_Calculate((uint32_t *)&buf, sizeof(buf) / 4));
+                printf("Reading old value           : 0x%08lx\n", crc32((uint32_t *)&buf, sizeof(buf) / 4));
             } else {
                 printf("Unable to read w25qxx\n");
             }
 
             if (w25qxx_erase(&w25qxx, offset_address, sizeof(buf)) == W25QXX_Ok) {
                 if (w25qxx_read(&w25qxx, offset_address, (uint8_t *)&buf, sizeof(buf)) == W25QXX_Ok) {
-                    printf("After erase                 : 0x%08lx\n", HAL_CRC_Calculate((uint32_t *)&buf, sizeof(buf) / 4));
+                    printf("After erase                 : 0x%08lx\n", crc32((uint32_t *)&buf, sizeof(buf) / 4));
                 }
             }
 
             fill_buffer(2, buf, sizeof(buf));
 
-            printf("Writing page value          : 0x%08lx\n", HAL_CRC_Calculate((uint32_t *)&buf, sizeof(buf) / 4));
+            printf("Writing page value          : 0x%08lx\n", crc32((uint32_t *)&buf, sizeof(buf) / 4));
 
             if (w25qxx_write(&w25qxx, offset_address, (uint8_t *)&buf, sizeof(buf)) == W25QXX_Ok) {
                 if (w25qxx_read(&w25qxx, offset_address, (uint8_t *)&buf, sizeof(buf)) == W25QXX_Ok) {
-                    printf("Reading back                : 0x%08lx\n", HAL_CRC_Calculate((uint32_t *)&buf, sizeof(buf) / 4));
+                    printf("Reading back                : 0x%08lx\n", crc32((uint32_t *)&buf, sizeof(buf) / 4));
                 }
             }
 
